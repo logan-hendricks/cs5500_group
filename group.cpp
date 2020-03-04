@@ -28,10 +28,15 @@ int generateAirports(int (&airports)[DIM][DIM], int size) {
 }
 
 int generateNewCoordinate(int coordinate) {
-	if (rand() % 2) {
-		return coordinate + 1 == DIM ? 0 : coordinate + 1;
-	} else {
-		return coordinate - 1 < 0 ? DIM - 1 : coordinate - 1;
+	int direction = rand() % 3;
+
+	switch(direction) {
+		case 0: return coordinate + 1 == DIM ? 0 : coordinate + 1;
+		        break;	
+		case 1: return coordinate - 1 < 0 ? DIM - 1 : coordinate - 1;
+			break;
+		case 2: return coordinate;
+			break;
 	}
 }
 

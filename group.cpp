@@ -9,13 +9,17 @@
 using namespace std;
 
 int landedAirplanes[DIM] {};
+int losingNodes[DIM] {};
+int currentLoser;
+int overallWinner;
+bool foundLoser;
 
 int generateAirports(int (&airports)[DIM][DIM], int size) {
 	int y, x;
 	
 	for (int y = 0; y < DIM; y++) {
 		for (int x = 0; x < DIM; x++) {
-			airports[y][x] = 0;
+			airports[y][x] = 99;
 		}
 	}
 
@@ -23,7 +27,7 @@ int generateAirports(int (&airports)[DIM][DIM], int size) {
 
 		y = rand() % DIM;
 		x = rand() % DIM;
-		airports[y][x] = 1;
+		airports[y][x] = 100;
 	}
 }
 
@@ -48,19 +52,35 @@ void copy(int arrayToCopy[DIM][DIM], int (&destinationArray)[DIM][DIM]) {
 	}
 }
 
-void receiveData(int(&airports)[DIM][DIM], int(&airplanes)[DIM][DIM]) {
+void setLoserIfExists(int size) {
+	bool oneLoser = false;
+	int loser;
+	for(int i = 0; i < size; i++) {
+		if (!landedAirplanes[i]) {
+			if (oneLoser) {
+				return;
+			}
+			loser = i;
+			oneLoser = true;
+		}
+	}
+	
+	currentLoser = loser;
+	foundLoser = true;
+}
+
+void receiveData(int(&airports)[DIM][DIM], int(&airplanes)[DIM][DIM], int size) {
 	int flag, newY, response;
 	MPI_Status mpiStatus;
 	MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MCW, &flag, MPI_STATUS_IGNORE);
 	while(flag) {
 		MPI_Recv(&newY, 1, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MCW, &mpiStatus);
-		if (airplanes[newY][mpiStatus.MPI_TAG] == 1) {
-			airports[newY][mpiStatus.MPI_TAG] = 3;
-			airplanes[newY][mpiStatus.MPI_TAG] = 3;
+		if (airplanes[newY][mpiStatus.MPI_TAG] == 100) {
 			response = -1;
 			landedAirplanes[mpiStatus.MPI_SOURCE] = 1;
+			setLoserIfExists(size);
 		} else {
-			airplanes[newY][mpiStatus.MPI_TAG] = 2;
+			airplanes[newY][mpiStatus.MPI_TAG] = mpiStatus.MPI_SOURCE;
 			response = 0;
 		}
 		
@@ -75,14 +95,12 @@ void printData(int data[DIM][DIM]) {
 	cout << endl << endl << endl << endl;
 	for (int y = 0; y < DIM; y++) {
 		for (int x = 0; x < DIM; x++) {
-			if (data[y][x] == 1) {
+			if (data[y][x] == 100) {
 				cout << " #";
-			} else if (data[y][x] == 2) {
-				cout <<" x";
-			} else if (data[y][x] == 3) {
-				cout << " *";
+			} else if (data[y][x] == 99) {
+				cout <<"  ";
 			} else {
-				cout << " .";
+				cout << data[y][x];
 			}
 		}
 		cout << endl;
@@ -98,8 +116,24 @@ int allAirplanesLanded(int size) {
 	return 1;
 }
 
+int allRoundsFinished(int size) {
+	int airplaneCount = 0;
+	int currentWinner;
+	for (int i = 0; i < size; i++) {
+		if(losingNodes[i]) airplaneCount++;
+		else currentWinner = i;
+	}
+	int isFinished = airplaneCount == size - 1;
+	
+	if (isFinished) {
+		overallWinner = currentWinner;
+	}
+	
+	return isFinished;
+}
+
 int main(int argc, char **argv) {
-	int rank, size, killSwitch, completeMessageFlag;
+	int rank, size, killSwitch, completeMessageFlag, restartMessageFlag, losingFlag;
 	int airports[DIM][DIM];
 	int airplanes[DIM][DIM];
 	int complete = 0;
@@ -116,6 +150,7 @@ int main(int argc, char **argv) {
 	if (!rank) {
 		generateAirports(airports, size);
 		printData(airports);
+		foundLoser = false;
 	}
 
 	while(true) {
@@ -123,6 +158,18 @@ int main(int argc, char **argv) {
 		if (completeMessageFlag) {
 			MPI_Recv(&completeMessageFlag, 1, MPI_INT, 0, 5, MCW, MPI_STATUS_IGNORE);
 			if (completeMessageFlag) break;
+		}
+
+		MPI_Iprobe(0, 10, MCW, &restartMessageFlag, MPI_STATUS_IGNORE);
+		if (restartMessageFlag) {
+			MPI_Recv(&restartMessageFlag, 1, MPI_INT, 0, 10, MCW, MPI_STATUS_IGNORE);
+			if (restartMessageFlag) {
+				complete = 0;
+				if (!rank) {
+					generateAirports(airports, size);
+					cout << "New Round!" << endl;
+				}
+			}
 		}
 
 		if (!rank) {
@@ -139,11 +186,44 @@ int main(int argc, char **argv) {
 				complete = 1;
 			}
 
-			receiveData(airports, airplanes);
+			receiveData(airports, airplanes, size);
 			printData(airplanes);
+
+			if (foundLoser) {
+				losingNodes[currentLoser] = 1;
+				losingFlag = -1;
+				MPI_Send(&losingFlag, 1, MPI_INT, currentLoser, 1, MCW);
+				cout << "Round Over, Loser of this round: " << currentLoser << endl;
+				foundLoser = false;
+				currentLoser = 0;
+				restartMessageFlag = 1;
+				char input;
+				while(input != 'y' && input != 'n') {
+					cout << "Play another round? y/n" << endl;
+					cin.clear();
+					cin >> input;
+					if (input == 'n') {
+						killSwitch = 1;
+						for (int i = 0; i < size; i++) {
+							MPI_Send(&killSwitch, 1, MPI_INT, i, 5, MCW);
+						}
+					}
+				}
+				input = ' ';
+
+				for (int i = 0; i < size; i++) {
+					if (!losingNodes[i]) {
+						MPI_Send(&restartMessageFlag, 1, MPI_INT, i, 10, MCW);
+						landedAirplanes[i] = 0;
+					} else {
+						landedAirplanes[i] = 2;
+					}
+				}
+
+			}
 			
 			if (complete) {
-				killSwitch = allAirplanesLanded(size); 
+				killSwitch = allRoundsFinished(size); 
 				if (killSwitch) {
 					for (int i = 0; i < size; i++) {
 						MPI_Send(&killSwitch, 1, MPI_INT, i, 5, MCW);
@@ -170,7 +250,7 @@ int main(int argc, char **argv) {
 	}
 
 	if (!rank) {
-		cout << "All airplanes landed" << endl;
+		cout << "Thanks for playing!" << endl;
 	}
 
 	MPI_Finalize();

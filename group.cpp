@@ -9,9 +9,7 @@
 using namespace std;
 
 int landedAirplanes[DIM] {};
-int losingNodes[DIM] {};
 int currentLoser;
-int overallWinner;
 bool foundLoser;
 
 int generateAirports(int (&airports)[DIM][DIM], int size) {
@@ -24,7 +22,6 @@ int generateAirports(int (&airports)[DIM][DIM], int size) {
 	}
 
 	for (int i = 0; i < size * 3; i++) {
-
 		y = rand() % DIM;
 		x = rand() % DIM;
 		airports[y][x] = 100;
@@ -53,15 +50,15 @@ void copy(int arrayToCopy[DIM][DIM], int (&destinationArray)[DIM][DIM]) {
 }
 
 void setLoserIfExists(int size) {
-	bool oneLoser = false;
+	bool loserFound = false;
 	int loser;
 	for(int i = 0; i < size; i++) {
 		if (!landedAirplanes[i]) {
-			if (oneLoser) {
+			if (loserFound) {
 				return;
 			}
 			loser = i;
-			oneLoser = true;
+			loserFound = true;
 		}
 	}
 	
@@ -107,33 +104,37 @@ void printData(int data[DIM][DIM]) {
 	}
 }
 
-int allAirplanesLanded(int size) {
-	for (int i = 0; i < size; i++) {
-		if (!landedAirplanes[i]) {
-			return 0;
+void endRound() {
+	int losingFlag = -1;
+	MPI_Send(&losingFlag, 1, MPI_INT, currentLoser, 1, MCW);
+	cout << "Round Over, Loser of this round: " << currentLoser << endl;
+	foundLoser = false;
+	currentLoser = 0;
+}
+
+void newRound(int size) {
+	int message = 1;
+	int tag = 10;
+	char input;
+	
+	while(input != 'y' && input != 'n') {
+		cout << "Play another round? y/n" << endl;
+		cin.clear();
+		cin >> input;
+		if (input == 'n') {
+			tag = 5;
 		}
 	}
-	return 1;
+
+	for (int i = 0; i < size; i++) {
+		MPI_Send(&message, 1, MPI_INT, i, tag, MCW);
+		landedAirplanes[i] = 0;
+	}
 }
 
-int allRoundsFinished(int size) {
-	int airplaneCount = 0;
-	int currentWinner;
-	for (int i = 0; i < size; i++) {
-		if(losingNodes[i]) airplaneCount++;
-		else currentWinner = i;
-	}
-	int isFinished = airplaneCount == size - 1;
-	
-	if (isFinished) {
-		overallWinner = currentWinner;
-	}
-	
-	return isFinished;
-}
 
 int main(int argc, char **argv) {
-	int rank, size, killSwitch, completeMessageFlag, restartMessageFlag, losingFlag;
+	int rank, size, killSwitch, completeMessageFlag, restartMessageFlag;
 	int airports[DIM][DIM];
 	int airplanes[DIM][DIM];
 	int complete = 0;
@@ -149,26 +150,19 @@ int main(int argc, char **argv) {
 	
 	if (!rank) {
 		generateAirports(airports, size);
-		printData(airports);
 		foundLoser = false;
 	}
 
 	while(true) {
 		MPI_Iprobe(0, 5, MCW, &completeMessageFlag, MPI_STATUS_IGNORE);
-		if (completeMessageFlag) {
-			MPI_Recv(&completeMessageFlag, 1, MPI_INT, 0, 5, MCW, MPI_STATUS_IGNORE);
-			if (completeMessageFlag) break;
-		}
+		if (completeMessageFlag) break;
 
 		MPI_Iprobe(0, 10, MCW, &restartMessageFlag, MPI_STATUS_IGNORE);
 		if (restartMessageFlag) {
-			MPI_Recv(&restartMessageFlag, 1, MPI_INT, 0, 10, MCW, MPI_STATUS_IGNORE);
-			if (restartMessageFlag) {
-				complete = 0;
-				if (!rank) {
-					generateAirports(airports, size);
-					cout << "New Round!" << endl;
-				}
+			complete = 0;
+			if (!rank) {
+				generateAirports(airports, size);
+				cout << "New Round!" << endl;
 			}
 		}
 
@@ -182,53 +176,16 @@ int main(int argc, char **argv) {
 
 		MPI_Barrier(MCW);
 		if (!rank) {
-			if (airports[currentY][currentX] == 1) {
-				complete = 1;
-			}
-
 			receiveData(airports, airplanes, size);
 			printData(airplanes);
 
-			if (foundLoser) {
-				losingNodes[currentLoser] = 1;
-				losingFlag = -1;
-				MPI_Send(&losingFlag, 1, MPI_INT, currentLoser, 1, MCW);
-				cout << "Round Over, Loser of this round: " << currentLoser << endl;
-				foundLoser = false;
-				currentLoser = 0;
-				restartMessageFlag = 1;
-				char input;
-				while(input != 'y' && input != 'n') {
-					cout << "Play another round? y/n" << endl;
-					cin.clear();
-					cin >> input;
-					if (input == 'n') {
-						killSwitch = 1;
-						for (int i = 0; i < size; i++) {
-							MPI_Send(&killSwitch, 1, MPI_INT, i, 5, MCW);
-						}
-					}
-				}
-				input = ' ';
-
-				for (int i = 0; i < size; i++) {
-					if (!losingNodes[i]) {
-						MPI_Send(&restartMessageFlag, 1, MPI_INT, i, 10, MCW);
-						landedAirplanes[i] = 0;
-					} else {
-						landedAirplanes[i] = 2;
-					}
-				}
-
+			if (airports[currentY][currentX] == 100) {
+				complete = 1;
 			}
-			
-			if (complete) {
-				killSwitch = allRoundsFinished(size); 
-				if (killSwitch) {
-					for (int i = 0; i < size; i++) {
-						MPI_Send(&killSwitch, 1, MPI_INT, i, 5, MCW);
-					}
-				}
+
+			if (foundLoser) {
+				endRound();
+				newRound(size);
 			}
 		} else {
 			if (!complete) {
